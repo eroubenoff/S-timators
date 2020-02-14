@@ -2,7 +2,7 @@
 
 ##### Shift Estimators  #####
 ##### Ethan Roubenoff   #####
-##### Test No. 1, 7 Jan 2020 #####
+##### Continous Implementation: 6 Feb 2020 #####
 
 # This script is an implementation of Tom Cassidy's Shift estimator (S-Timator).
 # Given two incomplete mortality curves for two independent populations (men 
@@ -11,21 +11,14 @@
 #         m_male(a) = m_female(a + S)
 # that one group's mortality is a linear scaling of the other's.
 
-# Note that this model is implemented in discrete time, and correct conversions
-# between integrals and summations should be verified.
+# This version is implemented in continuous time using linear interpolation, 
+# which differs from the first other version (shift_discrete)
 # Required external data sources: two files simulating men and women's
 # single-year mortality.  PDF of description is included. 
 
 # In this script I am seeking to replicate Tom's work.  Next steps include the
 # possibility of a spline, or a bayesian application.  I will also run this
 # estimator on as many curves as possible. 
-
-# A note on rounding: one of the big procedures here is accessing values at 
-# given ages (m(70) = .08); ages are discrete here.  However, since our 
-# estimator is not always an integer, there are inconsistencies with 
-# m(alpha + delta) => m(20 + 8.2); there is no entry for m(28.2) in the 
-# discrete data.  As a result, I just round to the nearest integer (m(28)).
-# This may introduce systemic bias!
 
 # Note that if any of the estimators are outside of the bounds of data,
 # the function will break.  I do not have a good solution for this as of yet. 
@@ -34,6 +27,7 @@
 ##### Load data #####
 library(tidyverse)
 library(magrittr)
+library(numDeriv)
 setwd("~/S-timators")
 rm(list=ls())
 gc()
@@ -51,9 +45,9 @@ f.sim <- readxl::read_excel("women-sim-file.xls", col_names = F) %>%
 m.sim
 f.sim
 
-ggplot() + 
-  geom_line(data = m.sim, aes(x = age, y = v), color = "blue") + 
-  geom_line(data = f.sim, aes(x = age, y = v), color = "red")  
+# ggplot() + 
+#   geom_line(data = m.sim, aes(x = age, y = v), color = "blue") + 
+#   geom_line(data = f.sim, aes(x = age, y = v), color = "red")  
 
 # It can be seen that the female curve is right-shifted and scaled
 # down relative to the male curve
@@ -61,43 +55,52 @@ ggplot() +
 
 #------------------------------------------------------------------------------#
 
+##### Step 0: Normalizing densities #####
+# I made this mistake before by not normalizing.  
+m.sim$v <- m.sim$v/sum(m.sim$v)
+f.sim$v <- f.sim$v/sum(f.sim$v)
+
 ##### Implementation #####
 # Notation may be slightly different from the pdf
 # all functions have prefix f_{quantity}
 # CONSTANTS are in CAPITALS
 # quantities should be consistent like: {variable}.{superscript}_{sex} sigma.sq.hat_m
 
+
+#### Convert to continuous time functions #
+v_w <- splinefun(m.sim$age, m.sim$v)
+v_m <- splinefun(f.sim$age, f.sim$v)
+# v_w <- approxfun(m.sim$age, m.sim$v)
+# v_m <- approxfun(f.sim$age, f.sim$v)
+
+# ALPHA <- min(min(m.sim$age), min(f.sim$age))
+# BETA <- max(max(m.sim$age), max(f.sim$age))
+ALPHA <- 70
+BETA <- 80
+m.sim <- m.sim %>% filter(age >= ALPHA, age <= BETA)
+f.sim <- f.sim %>% filter(age >= ALPHA, age <= BETA)
 mu_m <- weighted.mean(m.sim$age, m.sim$v)
 mu_f <- weighted.mean(f.sim$age, f.sim$v)
 
-ALPHA <- min(min(m.sim$age), min(f.sim$age))
-BETA <- max(max(m.sim$age), max(f.sim$age))
 DELTA <- round(mu_f - mu_m)
 
 #### Iteration ####
 # This function is a wrapper that returns all the constants needed for the
 # estimators.  The default value of DELTA is mu_f - mu_m. 
 
-stimator <- function(DELTA, ALPHA, BETA, f.sim, m.sim){
+
+
+stimator <- function(DELTA, ALPHA, BETA, v_w, v_m){
   
-  if(ALPHA + DELTA > max(m.sim$age)) stop("ALPHA + DELTA falls outside of range")
-  if(BETA - DELTA < min(m.sim$age)) stop("BETA - DELTA falls outside of range")
+  if(is.na(v_w(ALPHA +DELTA))) stop("ALPHA + DELTA falls outside of range")
+  if(is.na(v_w(BETA - DELTA))) stop("BETA - DELTA falls outside of range")
+  if(is.na(v_m(ALPHA +DELTA))) stop("ALPHA + DELTA falls outside of range")
+  if(is.na(v_m(BETA - DELTA))) stop("BETA - DELTA falls outside of range")
   
   #### mu ####
   
-  f_mu.hat <- function(alpha, beta, delta, df) {
-    df %>% 
-      filter(age > alpha & age < beta) %>%
-      mutate(av = age * v * n ) %>%
-      select(av) %>%
-      sum() %>% 
-      # divide_by(df %>% select(n) %>% sum()) %>%
-      return()
-  }
-  
-  # Note: need to round bc of discrete time
-  mu.hat_w <- f_mu.hat(alpha = round(ALPHA+DELTA), beta = BETA, delta = DELTA, df = f.sim)
-  mu.hat_m <- f_mu.hat(alpha = ALPHA, beta = round(BETA-DELTA), delta = DELTA, df = m.sim)
+  mu.hat_w <- integrate(function(a) {a * v_m(a)}, ALPHA+DELTA, BETA)$value
+  mu.hat_m <- integrate(function(a) {a * v_w(a)}, ALPHA, BETA-DELTA)$value
   
   # Quick sanity check:
   # ggplot() + 
@@ -109,110 +112,43 @@ stimator <- function(DELTA, ALPHA, BETA, f.sim, m.sim){
   #   geom_vline(xintercept = mu_f, color = "red") 
   
   #### sigma.hat.sq ####
-  f_sigma.hat.sq <- function(alpha, beta,df, mu.hat) {
-    df %>%
-      filter(age > alpha, age < beta) %>%
-      #mutate(a.mu = age - mu.hat) %>% # CHECK THIS
-      mutate(a.mu = age) %>%
-      mutate(r = a.mu^2 * v * n) %>%
-      select(r) %>%
-      sum() %>%
-      return()
-  }
   
-  sigma.hat.sq_w <- f_sigma.hat.sq(alpha = round(ALPHA + DELTA), 
-                                   beta = BETA, 
-                                   df = f.sim, 
-                                   mu.hat = mu.hat_w)
+  sigma.hat.sq_w <- integrate(function(a){(a - mu.hat_w)^2 * v_w(a)},ALPHA+DELTA, BETA)$value
+  sigma.hat.sq_m <- integrate(function(a){(a - mu.hat_m)^2 * v_m(a)},ALPHA, BETA-DELTA)$value
   
-  sigma.hat.sq_m <- f_sigma.hat.sq(alpha = ALPHA, 
-                                   beta = round(BETA - DELTA), 
-                                   df = m.sim, 
-                                   mu.hat = mu.hat_m)
   
   #### Q and Q.tilde ####
-  f_Q <- function(alpha, beta, df) {
-    df %>%
-      filter(age > alpha, age < beta) %>%
-      mutate(r = v*n) %>%
-      sum()
-  }
   
-  Q <- f_Q(alpha = round(ALPHA + DELTA), 
-           beta = BETA, 
-           df = f.sim)
-  Q.tilde <- f_Q(alpha = ALPHA, 
-           beta = round(BETA - DELTA), 
-           df = m.sim)
+  Q <- integrate(v_w,ALPHA + DELTA, BETA)$value
+  Q.tilde <- integrate(v_m, ALPHA, BETA - DELTA)$value
   
   #### R and R.tilde ####
   
-  R <- mu.hat_w + DELTA
-  R.tilde <- mu.hat_m - DELTA
+  R <- mu.hat_m + DELTA
+  R.tilde <- mu.hat_w - DELTA
   
   
   #### N and N.tilde ####
-  f_N <- function(alpha, beta, R, sigma.hat.sq_m, Q, 
-                  Q.tilde, df, mu.hat_m, mu.hat_w, delta ){
-    a1 <- ((beta - R)^2 - sigma.hat.sq_m/Q.tilde) * (df %>% filter(age == beta) %>% pull("v"))
-    a2 <- ((alpha - mu.hat_m)^2 - sigma.hat.sq_m/Q.tilde) * (df %>% filter(age == round(alpha + delta)) %>% pull("v"))
-    a3 <- -2*mu.hat_w + 2*R*Q
-    return(a1-a2+a3)
-    }
-  N <- f_N(ALPHA, BETA, R, sigma.hat.sq_m, Q,
-           Q.tilde, f.sim,mu.hat_m, mu.hat_w, DELTA)  
+
+  N <- ((BETA - R)^2 - sigma.hat.sq_m/Q.tilde)*v_w(BETA) - 
+    ((ALPHA - mu.hat_m)^2 - sigma.hat.sq_m/Q.tilde)*v_w(ALPHA + DELTA) - 
+    2*mu.hat_w+2*R*Q
   
-  f_N.tilde <- function(alpha, beta, R.tilde, sigma.hat.sq_w, 
-                        Q, Q.tilde, df, mu.hat_m, mu.hat_w, delta ){
-    a1 <- ((beta - mu.hat_w)^2 - sigma.hat.sq_w/Q) *(df %>% filter(age == round(beta - delta)) %>% pull("v"))
-    a2 <- ((alpha - R.tilde)^2 - sigma.hat.sq_w/Q)* (df %>% filter(age == alpha) %>% pull("v"))
-    a3 <- -2*mu.hat_m + 2*R.tilde*Q.tilde
-    return(a1 - a2 + a3)
-  }
-  
-  N.tilde <- f_N.tilde(ALPHA, BETA, R.tilde, sigma.hat.sq_w, 
-                       Q, Q.tilde, m.sim, mu.hat_m, mu.hat_w, DELTA)
-  
+  N.tilde <- ((BETA - mu.hat_w)^2 - sigma.hat.sq_w/Q)*v_m(BETA - DELTA) - 
+    ((ALPHA - R.tilde)^2 - sigma.hat.sq_w/Q)*v_m(ALPHA) -
+    2*mu.hat_m + 2*R.tilde*Q.tilde
   
   #### D and D.tilde ####
-  # Need to calc v' (vp; v prime)
-  # update this to use diff() function
-  f.sim$vp <- 0
-  m.sim$vp <- 0
-  for (i in 1:nrow(f.sim)){
-    vp <- (f.sim[i+1, "v"] - f.sim[i, "v"] ) %>% pull()
-    n <- (f.sim[i, "n"]) %>% pull
-    f.sim[i, "vp"] <- vp/n
-  }
-  f.sim[nrow(f.sim), "vp"] <- 0
+  # Derivative is v_m(x, deriv = 1)
   
-  for (i in 1:nrow(m.sim)){
-    vp <- (m.sim[i+1, "v"] - m.sim[i, "v"] ) %>% pull()
-    n <- (m.sim[i, "n"]) %>% pull
-    m.sim[i, "vp"] <- vp/n
-  }
-  m.sim[nrow(m.sim), "vp"] <- 0
+  D <- ((BETA - R)^2 - sigma.hat.sq_m/Q.tilde)*v_m(DELTA, deriv = 1) - 
+    ((ALPHA - mu.hat_m)^2-sigma.hat.sq_m/Q.tilde)*v_m(ALPHA + DELTA, deriv = 1) -
+    2*(BETA - R)*v_w(BETA) + 2*(ALPHA - mu.hat_m)*v_w(ALPHA + DELTA) + 2*Q
   
-  f_D <- function(beta, R, sigma.hat.sq_m, Q.tilde, 
-                  df, alpha, mu.hat_m, delta, Q){
-    a1 <- ((beta - R)^2 - sigma.hat.sq_m/Q.tilde) * (df %>% filter(age == beta) %>% pull("vp"))
-    a2 <- ((alpha - mu.hat_m)^2 - sigma.hat.sq_m/Q.tilde) * (df %>% filter(age == round(alpha + delta)) %>% pull("vp"))
-    a3 <- 2*(beta - R)*(df %>% filter(age == beta) %>% pull("v")) 
-    a4 <- 2*(alpha - mu.hat_m)*(df %>% filter(age == round(alpha + delta)) %>% pull("v")) + 2*Q
-    return(a1 - a2 - a3 + a4)
-  }
-  
-  D <- f_D(BETA, R, sigma.hat.sq_m, Q.tilde, m.sim, ALPHA, mu.hat_m, DELTA, Q)
-  
-  f_D.tilde <- function(beta, mu.hat_w, sigma.hat.sq_w, Q, df, alpha, R.tilde, Q.tilde, delta) {
-    a1 <- ((beta - mu.hat_w)^2 - sigma.hat.sq_w/Q) * (df %>% filter(age == round(beta - delta)) %>% pull("vp"))
-    a2 <- ((alpha - R.tilde)^2 - sigma.hat.sq_w/Q) * (df %>% filter(age == alpha) %>% pull("vp"))
-    a3 <- 2 * (beta - mu.hat_w) * (df %>% filter(age == round(beta - delta)) %>% pull("v"))
-    a4 <- 2*(alpha - R.tilde) * (df %>% filter(age == alpha) %>% pull("v")) + 2*Q.tilde
-    return(a1 - a2 - a3 + a4)
-  }
-  
-  D.tilde <- f_D.tilde(BETA, mu.hat_w, sigma.hat.sq_w, Q, m.sim, ALPHA, R.tilde, Q.tilde, DELTA)
+ 
+  D.tilde <- ((BETA - mu.hat_w)^2 - sigma.hat.sq_w/Q)*v_m(BETA - DELTA, deriv = 1)-
+    ((ALPHA - R.tilde)^2 - sigma.hat.sq_w/Q)*v_m(ALPHA, deriv = 1) - 
+    2*(BETA - mu.hat_w)*v_m(BETA - DELTA) + 2*(ALPHA - R.tilde) * v_m(ALPHA)+2*Q.tilde
   
   
   ret <- list("ALPHA" = ALPHA,
@@ -236,7 +172,7 @@ stimator <- function(DELTA, ALPHA, BETA, f.sim, m.sim){
   return(ret)
 }
 
-ret <- stimator(DELTA, ALPHA, BETA, f.sim, m.sim)
+ret <- stimator(DELTA, ALPHA, BETA, v_m, v_w)
 
 #### The Formulae  ####
 #### Estimator 1 ####
@@ -255,19 +191,6 @@ f_e1 <- function(delta = DELTA,
                      Q*R^2 -  Q/Q.tilde*sigma.hat.sq_m)
   return(a1 - (sqrt(a2)/D))
 }
-
-e1 <- with(ret, f_e1(delta = DELTA, 
-           N = N,
-           D = D, 
-           sigma.hat.sq_w = sigma.hat.sq_w, 
-           sigma.hat.sq_m = sigma.hat.sq_m, 
-           mu.hat_w = mu.hat_w, 
-           Q = Q, 
-           Q.tilde = Q.tilde, 
-           R = R) )
-
-print(e1)
-
 
 #### Estimator 2 ####
 f_e2 <- function(delta = DELTA, 
@@ -288,16 +211,6 @@ f_e2 <- function(delta = DELTA,
   return(a1 + sqrt(a2)/D.tilde)
   
 }
-e2 <- with(ret, f_e2(delta = DELTA, 
-           N.tilde = N.tilde,
-           D.tilde = D.tilde,
-           sigma.hat.sq_m = sigma.hat.sq_m,
-           mu.hat_m = mu.hat_m,
-           Q.tilde = Q.tilde,
-           R.tilde = R.tilde,
-           Q = Q,
-           sigma.hat.sq_w = sigma.hat.sq_w))
-print(e2)
 
 #### Estimator 3 ####
 
@@ -314,16 +227,6 @@ f_e3 <- function(delta = DELTA,
     Q.tilde*R^2 - Q/Q.tilde*sigma.hat.sq_m
   return(delta - a1/N)
 }
- 
-e3 <- with(ret, f_e3(delta = DELTA,
-           sigma.hat.sq_w = sigma.hat.sq_w,
-           mu.hat_w = mu.hat_w,
-           Q = Q,
-           R = R, 
-           Q.tilde = Q.tilde,
-           sigma.hat.sq_m = sigma.hat.sq_m,
-           N=N))
-print(e3)
 
 #### Estimator 4 ####
 
@@ -340,16 +243,6 @@ f_e4 <- function(delta = DELTA,
   return(delta + a1/N.tilde)
 }
 
-e4 <- with(ret, f_e4(delta = DELTA,
-           sigma.hat.sq_m = sigma.hat.sq_m,
-           mu.hat_m= mu.hat_m,
-           Q.tilde = Q.tilde,
-           R.tilde = R.tilde,
-           Q = Q,
-           sigma.hat.sq_w = sigma.hat.sq_w,
-           N.tilde = N.tilde))
-  
-print(e4)
 
 #### Iteration Procedure ####
 # Program has already run once, providing first estimates of e1, e2, e3, e4
@@ -357,15 +250,78 @@ print(e4)
 # Call iteratively replacing DELTA with e1
 # After completing n iterations, run to clear, and repeat with e2, e3, e4
 
-n <- 10
-iteration_df <- data.frame(matrix(0, n, 4))
-colnames(iteration_df) <- c("e1", "e2", "e3", "e4")
+n <- 100
+iteration_df <- data.frame(matrix(0, n, 5))
+colnames(iteration_df) <- c("index", "e1", "e2", "e3", "e4")
+iteration_df$index <- 1:n
+
+# e1
+ret <- stimator(DELTA, ALPHA, BETA, v_m, v_w)
+iteration_df[1, "e1"] <- with(ret, f_e1(delta = DELTA, 
+                                       N = N,
+                                       D = D, 
+                                       sigma.hat.sq_w = sigma.hat.sq_w, 
+                                       sigma.hat.sq_m = sigma.hat.sq_m, 
+                                       mu.hat_w = mu.hat_w, 
+                                       Q = Q, 
+                                       Q.tilde = Q.tilde, 
+                                       R = R) )
+for (i in 2:n) {
+  ret <- stimator(DELTA = iteration_df[i - 1, "e1"], ALPHA, BETA, v_m, v_w)
+  e1 <- with(ret, f_e3(delta = e1,
+                       sigma.hat.sq_w = sigma.hat.sq_w,
+                       mu.hat_w = mu.hat_w,
+                       Q = Q,
+                       R = R, 
+                       Q.tilde = Q.tilde,
+                       sigma.hat.sq_m = sigma.hat.sq_m,
+                       N=N))
+  iteration_df[i, "e1"] <- e1
+}
+iteration_df
+plot(iteration_df$e1)
+
+# e2 
+ret <- stimator(DELTA, ALPHA, BETA, v_m, v_w)
+iteration_df[1, "e2"] <- with(ret, f_e2(delta = DELTA, 
+                                        N.tilde = N.tilde,
+                                        D.tilde = D.tilde,
+                                        sigma.hat.sq_m = sigma.hat.sq_m,
+                                        mu.hat_m = mu.hat_m,
+                                        Q.tilde = Q.tilde,
+                                        R.tilde = R.tilde,
+                                        Q = Q,
+                                        sigma.hat.sq_w = sigma.hat.sq_w))
+for (i in 2:n) {
+  ret <- stimator(DELTA = iteration_df[i - 1, "e2"], ALPHA, BETA, v_m, v_w)
+  e2 <- with(ret, f_e2(delta = DELTA, 
+                       N.tilde = N.tilde,
+                       D.tilde = D.tilde,
+                       sigma.hat.sq_m = sigma.hat.sq_m,
+                       mu.hat_m = mu.hat_m,
+                       Q.tilde = Q.tilde,
+                       R.tilde = R.tilde,
+                       Q = Q,
+                       sigma.hat.sq_w = sigma.hat.sq_w))
+  iteration_df[i, "e2"] <- e2
+}
+iteration_df
+plot(iteration_df$e2)
+
 
 # e3
-iteration_df[1, "e3"] <- e3
+ret <- stimator(DELTA, ALPHA, BETA, v_m, v_w)
+iteration_df[1, "e3"] <- with(ret, f_e3(delta = DELTA,
+                                        sigma.hat.sq_w = sigma.hat.sq_w,
+                                        mu.hat_w = mu.hat_w,
+                                        Q = Q,
+                                        R = R, 
+                                        Q.tilde = Q.tilde,
+                                        sigma.hat.sq_m = sigma.hat.sq_m,
+                                        N=N))
 for (i in 2:n) {
-  ret <- stimator(DELTA = e3, ALPHA, BETA, f.sim, m.sim)
-  e3 <- with(ret, f_e3(delta = e3,
+  ret <- stimator(DELTA = iteration_df[i - 1, "e3"], ALPHA, BETA, v_m, v_w)
+  e3 <- with(ret, f_e3(delta = DELTA,
                        sigma.hat.sq_w = sigma.hat.sq_w,
                        mu.hat_w = mu.hat_w,
                        Q = Q,
@@ -379,9 +335,17 @@ iteration_df
 plot(iteration_df$e3)
 
 # e4
-iteration_df[1, "e4"] <- e4
+ret <- stimator(DELTA, ALPHA, BETA, v_m, v_w)
+iteration_df[1, "e4"] <- with(ret, f_e4(delta = DELTA,
+                                        sigma.hat.sq_m = sigma.hat.sq_m,
+                                        mu.hat_m= mu.hat_m,
+                                        Q.tilde = Q.tilde,
+                                        R.tilde = R.tilde,
+                                        Q = Q,
+                                        sigma.hat.sq_w = sigma.hat.sq_w,
+                                        N.tilde = N.tilde))
 for (i in 2:n) {
-  ret <- stimator(DELTA = e4, ALPHA, BETA, f.sim, m.sim)
+  ret <- stimator(DELTA = iteration_df[i-1, "e4"], ALPHA, BETA, f.sim, m.sim)
   e4 <- with(ret, f_e4(delta = DELTA,
              sigma.hat.sq_m = sigma.hat.sq_m,
              mu.hat_m= mu.hat_m,
@@ -394,6 +358,9 @@ for (i in 2:n) {
 }
 iteration_df
 plot(iteration_df$e4)
+
+ggplot( iteration_df %>% gather(estimator, value, -index)) +
+  geom_path(aes(index, value, linetype = estimator))
 
 
 
