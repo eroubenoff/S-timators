@@ -224,8 +224,8 @@ procedure <- function(m.sim, f.sim, ALPHA, BETA, n = 10) {
                    sigma.hat.sq_m ,
                    N) {
     
-    a1 <- sigma.hat.sq_w + 2*mu.hat_w^2 - Q.tilde*mu.hat_w^2 - 2*R*mu.hat_w +
-      Q.tilde*R^2 - Q/Q.tilde*sigma.hat.sq_m
+    a1 <- sigma.hat.sq_w + 2*mu.hat_w^2 - Q*mu.hat_w^2 - 2*R*mu.hat_w +
+      Q*R^2 - Q/Q.tilde*sigma.hat.sq_m
     # browser()
     return(delta - (a1/N))
   }
@@ -307,7 +307,7 @@ procedure <- function(m.sim, f.sim, ALPHA, BETA, n = 10) {
   
   # e4
   for (i in 2:n) {
-    ret <- stimator(DELTA = iteration_df[i-1, "e4"], ALPHA, BETA, f.sim, m.sim)
+    ret <- stimator(DELTA = iteration_df[i-1, "e4"], ALPHA, BETA, v_m, v_w)
     if (length(ret) == 1) {break }
     e4 <- with(ret, f_e4(delta = DELTA,
                          sigma.hat.sq_m = sigma.hat.sq_m,
@@ -331,6 +331,54 @@ procedure <- function(m.sim, f.sim, ALPHA, BETA, n = 10) {
 (procedure(m.sim, f.sim, 50, 100, 100))
 (procedure(m.sim, f.sim, 30, 95, 10))
 
+# Create a contour plot with 5-year resolution
+
+contour_df <- data.frame(ALPHA = NA, 
+                         BETA  = NA,
+                         e1 = NA,
+                         e2 = NA, 
+                         e3 = NA, 
+                         e4 = NA)
+
+for (A in seq(0, 120, 5)){
+  for (B in seq(0, 120, 5)){
+    if (B <= A) {next}
+    # print(c(A, B))
+    t <- suppressMessages(suppressMessages(procedure(m.sim, f.sim, A, B, n = 100)))
+    t <- t %>% slice(100) %>% select(e1, e2, e3, e4)
+    t <- t %>% mutate(ALPHA = A, BETA = B)
+    contour_df <- contour_df %>% bind_rows(t)
+  }
+}
+
+
+f <- scale_fill_gradient2(low = "red", mid = "white",
+                     high = "blue", midpoint = 7, space = "Lab",
+                     limits = c(-10, 10), 
+                     na.value = "grey50", guide = "colourbar", aesthetics = "fill")
+
+gridExtra::grid.arrange(
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e1)) +
+    f +
+    ggtitle("e1"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e2)) + 
+    f + 
+    ggtitle("e2"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e3)) + 
+    f +
+    ggtitle("e3"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e4)) +
+    f + 
+    ggtitle("e4")
+) + ggtitle("100 Iteration Contour Plot (Values >10, <-10 removed)")
 
 
 
@@ -356,20 +404,67 @@ SWE <- SWE %>% group_by(Year) %>%
 
 # Apparently this only gives the 1892 cohort, which is fine for now
 
-m <- SWE %>% select(Age, Male) %>%
+m.swe <- SWE %>% select(Age, Male) %>%
   rename(age = Age, v = Male) 
-m  
+m.swe  
 
-f <- SWE %>% select(Age, Female) %>%
+f.swe <- SWE %>% select(Age, Female) %>%
   rename(age = Age, v = Female)
-f
+f.swe
 
-procedure(m, f, 60, 100, 10)  # e1 converges around 11 but e4 to 33
-procedure(m, f, 80, 100, 100) #e1 converges to 13 but e2 converes to -8?
-procedure(m, f, 80, 90, 100) # e1 converges to 5 but e3 converges to 3.84
+procedure(m.swe, f.swe, 60, 100, 10)  # e1 converges around 11 but e4 to 33
+procedure(m.swe, f.swe, 80, 100, 100) #e1 converges to 13 but e2 converes to -8?
+procedure(m.swe, f.swe, 80, 90, 100) # e1 converges to 5 but e3 converges to 3.84
 
-# Try again with a rabdin
 
+# Create a contour plot with 5-year resolution
+
+contour_df <- data.frame(ALPHA = NA, 
+                         BETA  = NA,
+                         e1 = NA,
+                         e2 = NA, 
+                         e3 = NA, 
+                         e4 = NA)
+
+for (A in seq(0, 120, 5)){
+  for (B in seq(0, 120, 5)){
+    if (B <= A) {next}
+    # print(c(A, B))
+    t <- suppressMessages(suppressMessages(procedure(m.swe, f.swe, A, B, n = 100)))
+    t <- t %>% slice(100) %>% select(e1, e2, e3, e4)
+    t <- t %>% mutate(ALPHA = A, BETA = B)
+    contour_df <- contour_df %>% bind_rows(t)
+  }
+}
+
+
+f <- scale_fill_gradient2(low = "red", mid = "white",
+                          high = "blue", midpoint = 0, space = "Lab",
+                          limits = c(-10, 10), 
+                          na.value = "grey50", guide = "colourbar", aesthetics = "fill")
+
+gridExtra::grid.arrange(
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e1)) +
+    f +
+    ggtitle("e1"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e2)) + 
+    f + 
+    ggtitle("e2"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e3)) + 
+    f +
+    ggtitle("e3"),
+  contour_df %>% 
+    ggplot() + 
+    geom_tile(mapping = aes(x = ALPHA, y = BETA, fill = e4)) +
+    f + 
+    ggtitle("e4")
+) + ggtitle("100 Iteration Contour Plot (Values >10, <-10 removed)")
 
 
 
